@@ -8,6 +8,7 @@
 package io.zeebe.util;
 
 import java.time.Duration;
+import java.util.Objects;
 import org.agrona.DirectBuffer;
 
 public final class EnsureUtil {
