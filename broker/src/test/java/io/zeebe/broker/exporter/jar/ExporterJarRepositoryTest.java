@@ -13,9 +13,9 @@ import static org.junit.Assume.assumeTrue;
 
 import io.zeebe.broker.exporter.util.JarCreatorRule;
 import io.zeebe.broker.exporter.util.TestJarExporter;
-import io.zeebe.util.FileUtil;
 import java.io.File;
 import java.io.IOException;
+import org.junit.Assert;
 import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
@@ -59,7 +59,9 @@ public final class ExporterJarRepositoryTest {
     final File dummy = temporaryFolder.newFile("missing.jar");
 
     // when
-    FileUtil.deleteFile(dummy);
+    if (dummy.exists() && !dummy.delete()) {
+      Assert.fail("Failed to delete file " + dummy.getName());
+    }
 
     // then
     assertThatThrownBy(() -> jarRepository.load(dummy.getAbsolutePath()))
