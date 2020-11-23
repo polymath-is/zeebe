@@ -8,6 +8,7 @@
 package io.zeebe.broker.system.management;
 
 import io.zeebe.broker.Loggers;
+import io.zeebe.broker.exporter.stream.ExporterDirector;
 import io.zeebe.broker.system.partitions.ZeebePartition;
 import io.zeebe.engine.processing.streamprocessor.StreamProcessor;
 import io.zeebe.snapshots.broker.impl.FileBasedSnapshotMetadata;
@@ -95,16 +96,23 @@ public class BrokerAdminServiceImpl extends Actor implements BrokerAdminService 
 
   private CompletableFuture<PartitionStatus> getPartitionStatus(final ZeebePartition partition) {
     final CompletableFuture<PartitionStatus> partitionStatus = new CompletableFuture<>();
-    getStreamProcessor(partition)
-        .onComplete(
-            (streamProcessor, throwable) -> {
-              if (throwable != null) {
-                partitionStatus.completeExceptionally(throwable);
+    final var streamProcessorFuture = toCompletableFuture(partition.getStreamProcessor());
+    final var exporterDirectorFuture = toCompletableFuture(partition.getExporterDirector());
+    CompletableFuture.allOf(streamProcessorFuture, exporterDirectorFuture)
+        .whenComplete(
+            (nothing, error) -> {
+              if (error != null) {
+                partitionStatus.completeExceptionally(error);
                 return;
               }
-              streamProcessor.ifPresentOrElse(
-                  sp -> getLeaderPartitionStatus(partition, sp, partitionStatus),
-                  () -> getFollowerPartitionStatus(partition, partitionStatus));
+              final var streamProcessor = streamProcessorFuture.join();
+              final var exporterDirector = exporterDirectorFuture.join();
+              if (streamProcessor.isPresent() && exporterDirector.isPresent()) {
+                getLeaderPartitionStatus(
+                    partition, streamProcessor.get(), exporterDirector.get(), partitionStatus);
+              } else {
+                getFollowerPartitionStatus(partition, partitionStatus);
+              }
             });
     return partitionStatus;
   }
@@ -119,48 +127,56 @@ public class BrokerAdminServiceImpl extends Actor implements BrokerAdminService 
   private void getLeaderPartitionStatus(
       final ZeebePartition partition,
       final StreamProcessor streamProcessor,
+      final ExporterDirector exporterDirector,
       final CompletableFuture<PartitionStatus> partitionStatus) {
-    final var positionFuture = streamProcessor.getLastProcessedPositionAsync();
-    positionFuture.onComplete(
-        (processedPosition, positionRetrieveError) -> {
-          if (positionRetrieveError != null) {
-            partitionStatus.completeExceptionally(positionRetrieveError);
-            return;
+    final var positionFuture = toCompletableFuture(streamProcessor.getLastProcessedPositionAsync());
+    final var currentPhaseFuture = toCompletableFuture(streamProcessor.getCurrentPhase());
+    final var exporterPhaseFuture = toCompletableFuture(exporterDirector.isExportingPaused());
+    final var exporterPosition = exporterDirector.getState().getLowestPosition();
+    final var snapshotId = getSnapshotId(partition);
+    final var processedPositionInSnapshot =
+        snapshotId
+            .flatMap(s -> FileBasedSnapshotMetadata.ofFileName(s))
+            .map(FileBasedSnapshotMetadata::getProcessedPosition)
+            .orElse(null);
+
+    CompletableFuture.allOf(positionFuture, currentPhaseFuture, exporterPhaseFuture)
+        .whenComplete(
+            (nothing, error) -> {
+              if (error != null) {
+                partitionStatus.completeExceptionally(error);
+                return;
+              }
+              final var processedPosition = positionFuture.join();
+              final var processorPhase = currentPhaseFuture.join();
+              final var exporterPhase = exporterPhaseFuture.join() ? "PAUSED" : "EXPORTING";
+              final var status =
+                  PartitionStatus.ofLeader(
+                      processedPosition,
+                      snapshotId.orElse(null),
+                      processedPositionInSnapshot,
+                      processorPhase,
+                      exporterPhase,
+                      exporterPosition);
+              partitionStatus.complete(status);
+            });
+  }
+
+  private <T> CompletableFuture<T> toCompletableFuture(final ActorFuture<T> actorFuture) {
+    final CompletableFuture<T> future = new CompletableFuture<>();
+    actorFuture.onComplete(
+        (result, error) -> {
+          if (error == null) {
+            future.complete(result);
+          } else {
+            future.completeExceptionally(error);
           }
-
-          streamProcessor
-              .getCurrentPhase()
-              .onComplete(
-                  (phase, phaseError) -> {
-                    if (phaseError != null) {
-                      partitionStatus.completeExceptionally(phaseError);
-                      return;
-                    }
-
-                    final var snapshotId = getSnapshotId(partition);
-                    final var processedPositionInSnapshot =
-                        snapshotId
-                            .flatMap(s -> FileBasedSnapshotMetadata.ofFileName(s))
-                            .map(FileBasedSnapshotMetadata::getProcessedPosition)
-                            .orElse(null);
-                    final var status =
-                        PartitionStatus.ofLeader(
-                            processedPosition,
-                            snapshotId.orElse(null),
-                            processedPositionInSnapshot,
-                            phase);
-                    partitionStatus.complete(status);
-                  });
         });
+    return future;
   }
 
   private Optional<String> getSnapshotId(final ZeebePartition partition) {
     return partition.getSnapshotStore().getLatestSnapshot().map(PersistedSnapshot::getId);
-  }
-
-  private ActorFuture<Optional<StreamProcessor>> getStreamProcessor(
-      final ZeebePartition partition) {
-    return partition.getStreamProcessor();
   }
 
   private void prepareAllPartitionsForSafeUpgrade() {
@@ -197,7 +213,7 @@ public class BrokerAdminServiceImpl extends Actor implements BrokerAdminService 
   }
 
   private void resumeExportingOnAllPartitions() {
-    LOG.info("Resuming paused StreamProcessor on all partitions.");
+    LOG.info("Resuming exporting on all partitions.");
     partitions.forEach(ZeebePartition::resumeExporting);
   }
 }

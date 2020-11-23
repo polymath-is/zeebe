@@ -102,6 +102,10 @@ public final class ExporterDirector extends Actor {
         });
   }
 
+  public ActorFuture<Boolean> isExportingPaused() {
+    return actor.call(() -> isPaused);
+  }
+
   @Override
   public String getName() {
     return name;

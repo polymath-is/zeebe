@@ -24,6 +24,7 @@ public class PartitionProcessingState {
   public PartitionProcessingState(final RaftPartition raftPartition) {
     this.raftPartition = raftPartition;
     initProcessingStatus();
+    initExportingState();
   }
 
   public boolean isDiskSpaceAvailable() {
@@ -94,5 +95,9 @@ public class PartitionProcessingState {
         .toPath()
         .resolve(PERSISTED_EXPORTER_PAUSE_STATE_FILENAME)
         .toFile();
+  }
+
+  private void initExportingState() {
+    isExportingPaused = getPersistedExporterPauseState().exists();
   }
 }

@@ -10,6 +10,7 @@ package io.zeebe.broker.system.partitions;
 import io.atomix.raft.RaftRoleChangeListener;
 import io.atomix.raft.RaftServer.Role;
 import io.zeebe.broker.Loggers;
+import io.zeebe.broker.exporter.stream.ExporterDirector;
 import io.zeebe.broker.system.monitoring.DiskSpaceUsageListener;
 import io.zeebe.broker.system.monitoring.HealthMetrics;
 import io.zeebe.engine.processing.streamprocessor.StreamProcessor;
@@ -381,6 +382,10 @@ public final class ZeebePartition extends Actor
 
   public ActorFuture<Optional<StreamProcessor>> getStreamProcessor() {
     return actor.call(() -> Optional.ofNullable(context.getStreamProcessor()));
+  }
+
+  public ActorFuture<Optional<ExporterDirector>> getExporterDirector() {
+    return actor.call(() -> Optional.ofNullable(context.getExporterDirector()));
   }
 
   public ActorFuture<Void> pauseExporting() {
