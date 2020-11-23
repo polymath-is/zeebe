@@ -209,14 +209,12 @@ class FileChannelJournalSegmentReader<E> implements JournalReader<E> {
   }
 
   private void readNextEntry(final long index, final int length) {
-    final int checksumPosition = memory.position();
+    final long checksum = memory.getInt() & 0xFFFFFFFFL;
 
-    if (isChecksumInvalid(length)) {
+    if (isChecksumInvalid(checksum, length)) {
       resetReading();
       return;
     }
-    memory.position(checksumPosition);
-    final long checksum = memory.getInt() & 0xFFFFFFFFL;
 
     // If the stored checksum equals the computed checksum, set the next entry.
     final int limit = memory.limit();
@@ -231,10 +229,7 @@ class FileChannelJournalSegmentReader<E> implements JournalReader<E> {
     nextEntry = null;
   }
 
-  private boolean isChecksumInvalid(final int length) {
-    // Read the checksum of the entry.
-    final long checksum = memory.getInt() & 0xFFFFFFFFL;
-
+  private boolean isChecksumInvalid(final long checksum, final int length) {
     // Compute the checksum for the entry bytes.
     final Checksum crc32 = new CRC32();
     crc32.update(memory.array(), memory.position(), length);
