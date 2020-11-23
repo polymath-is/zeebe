@@ -14,12 +14,14 @@ import io.zeebe.snapshots.broker.impl.FileBasedSnapshotMetadata;
 import io.zeebe.snapshots.raft.PersistedSnapshot;
 import io.zeebe.util.sched.Actor;
 import io.zeebe.util.sched.future.ActorFuture;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 
 /**
@@ -44,7 +46,17 @@ public class BrokerAdminServiceImpl extends Actor implements BrokerAdminService 
 
   @Override
   public void resumeStreamProcessing() {
-    actor.call(this::unpauseStreamProcessingOnAllPartitions);
+    actor.call(this::resumeStreamProcessingOnAllPartitions);
+  }
+
+  @Override
+  public void pauseExporting() {
+    actor.call(this::pauseExportingOnAllPartitions);
+  }
+
+  @Override
+  public void resumeExporting() {
+    actor.call(this::resumeExportingOnAllPartitions);
   }
 
   @Override
@@ -154,9 +166,14 @@ public class BrokerAdminServiceImpl extends Actor implements BrokerAdminService 
   private void prepareAllPartitionsForSafeUpgrade() {
     LOG.info("Preparing for safe upgrade.");
 
-    final var pauseCompleted = pauseStreamProcessingOnAllPartitions();
+    final var pauseProcessingCompleted = pauseStreamProcessingOnAllPartitions();
+    final var pauseExportingCompleted = pauseExportingOnAllPartitions();
+    final var pauseAll =
+        Stream.of(pauseProcessingCompleted, pauseExportingCompleted)
+            .flatMap(Collection::stream)
+            .collect(Collectors.toList());
 
-    actor.runOnCompletion(pauseCompleted, t -> takeSnapshotOnAllPartitions(partitions));
+    actor.runOnCompletion(pauseAll, t -> takeSnapshotOnAllPartitions(partitions));
   }
 
   private List<ActorFuture<Void>> pauseStreamProcessingOnAllPartitions() {
@@ -164,7 +181,7 @@ public class BrokerAdminServiceImpl extends Actor implements BrokerAdminService 
     return partitions.stream().map(ZeebePartition::pauseProcessing).collect(Collectors.toList());
   }
 
-  private void unpauseStreamProcessingOnAllPartitions() {
+  private void resumeStreamProcessingOnAllPartitions() {
     LOG.info("Resuming paused StreamProcessor on all partitions.");
     partitions.forEach(ZeebePartition::resumeProcessing);
   }
@@ -172,5 +189,15 @@ public class BrokerAdminServiceImpl extends Actor implements BrokerAdminService 
   private void takeSnapshotOnAllPartitions(final List<ZeebePartition> partitions) {
     LOG.info("Triggering Snapshots on all partitions.");
     partitions.forEach(ZeebePartition::triggerSnapshot);
+  }
+
+  private List<ActorFuture<Void>> pauseExportingOnAllPartitions() {
+    LOG.info("Pausing exporting on all partitions.");
+    return partitions.stream().map(ZeebePartition::pauseExporting).collect(Collectors.toList());
+  }
+
+  private void resumeExportingOnAllPartitions() {
+    LOG.info("Resuming paused StreamProcessor on all partitions.");
+    partitions.forEach(ZeebePartition::resumeExporting);
   }
 }

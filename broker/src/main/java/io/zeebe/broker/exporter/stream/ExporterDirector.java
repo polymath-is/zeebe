@@ -62,6 +62,7 @@ public final class ExporterDirector extends Actor {
 
   private ActorCondition onCommitPositionUpdatedCondition;
   private boolean inExportingPhase;
+  private boolean isPaused;
 
   public ExporterDirector(final ExporterDirectorContext context) {
     name = context.getName();
@@ -83,6 +84,22 @@ public final class ExporterDirector extends Actor {
 
   public ActorFuture<Void> stopAsync() {
     return actor.close();
+  }
+
+  public ActorFuture<Void> pauseExporting() {
+    return actor.call(
+        () -> {
+          isPaused = true;
+          return;
+        });
+  }
+
+  public ActorFuture<Void> resumeExporting() {
+    return actor.call(
+        () -> {
+          isPaused = false;
+          return;
+        });
   }
 
   @Override
@@ -235,7 +252,7 @@ public final class ExporterDirector extends Actor {
   }
 
   private void readNextEvent() {
-    if (isOpened.get() && logStreamReader.hasNext() && !inExportingPhase) {
+    if (isOpened.get() && logStreamReader.hasNext() && !inExportingPhase && !isPaused) {
       final LoggedEvent currentEvent = logStreamReader.next();
       if (eventFilter == null || eventFilter.applies(currentEvent)) {
         inExportingPhase = true;

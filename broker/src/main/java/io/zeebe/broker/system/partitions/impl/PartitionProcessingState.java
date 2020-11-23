@@ -14,8 +14,10 @@ import java.nio.file.Files;
 
 public class PartitionProcessingState {
 
-  private static final String PERSISTED_PAUSE_STATE_FILENAME = ".paused";
+  private static final String PERSISTED_PAUSE_STATE_FILENAME = ".processedPaused";
+  private static final String PERSISTED_EXPORTER_PAUSE_STATE_FILENAME = ".exporterPaused";
   private boolean isProcessingPaused;
+  private boolean isExportingPaused;
   private final RaftPartition raftPartition;
   private boolean diskSpaceAvailable;
 
@@ -63,5 +65,34 @@ public class PartitionProcessingState {
 
   public boolean shouldProcess() {
     return isDiskSpaceAvailable() && !isProcessingPaused();
+  }
+
+  public boolean isExportingPaused() {
+    return isExportingPaused;
+  }
+
+  @SuppressWarnings({"squid:S899"})
+  public void pauseExporting() throws IOException {
+    final File persistedExporterPauseState = getPersistedExporterPauseState();
+    persistedExporterPauseState.createNewFile();
+    if (persistedExporterPauseState.exists()) {
+      isExportingPaused = true;
+    }
+  }
+
+  public void resumeExporting() throws IOException {
+    final File persistedExporterPauseState = getPersistedExporterPauseState();
+    Files.deleteIfExists(persistedExporterPauseState.toPath());
+    if (!persistedExporterPauseState.exists()) {
+      isExportingPaused = false;
+    }
+  }
+
+  private File getPersistedExporterPauseState() {
+    return raftPartition
+        .dataDirectory()
+        .toPath()
+        .resolve(PERSISTED_EXPORTER_PAUSE_STATE_FILENAME)
+        .toFile();
   }
 }

@@ -382,4 +382,38 @@ public final class ZeebePartition extends Actor
   public ActorFuture<Optional<StreamProcessor>> getStreamProcessor() {
     return actor.call(() -> Optional.ofNullable(context.getStreamProcessor()));
   }
+
+  public ActorFuture<Void> pauseExporting() {
+    final CompletableActorFuture<Void> completed = new CompletableActorFuture<>();
+    actor.call(
+        () -> {
+          try {
+            context.pauseExporting();
+
+            if (context.getExporterDirector() != null && !context.shouldExport()) {
+              context.getExporterDirector().pauseExporting().onComplete(completed);
+            } else {
+              completed.complete(null);
+            }
+          } catch (final IOException e) {
+            LOG.error("Could not pause exporting", e);
+            completed.completeExceptionally(e);
+          }
+        });
+    return completed;
+  }
+
+  public void resumeExporting() {
+    actor.call(
+        () -> {
+          try {
+            context.resumeExporting();
+            if (context.getExporterDirector() != null && context.shouldExport()) {
+              context.getExporterDirector().resumeExporting();
+            }
+          } catch (final IOException e) {
+            LOG.error("Could not resume exporting", e);
+          }
+        });
+  }
 }
