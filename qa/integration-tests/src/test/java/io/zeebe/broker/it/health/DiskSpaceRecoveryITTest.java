@@ -11,13 +11,13 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 
-import com.github.dockerjava.api.model.Bind;
-import com.github.dockerjava.api.model.Volume;
 import io.zeebe.client.ZeebeClient;
 import io.zeebe.containers.ZeebeContainer;
+import io.zeebe.test.util.testcontainers.ManagedVolume;
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import org.agrona.CloseHelper;
 import org.elasticsearch.client.RestClient;
 import org.junit.After;
 import org.junit.Before;
@@ -28,69 +28,35 @@ import org.testcontainers.containers.Network;
 import org.testcontainers.elasticsearch.ElasticsearchContainer;
 
 public class DiskSpaceRecoveryITTest {
-  static ZeebeContainer zeebeBroker;
   private static final Logger LOG = LoggerFactory.getLogger(DiskSpaceRecoveryITTest.class);
-  private static final String VOLUME_NAME = "data-DiskSpaceRecoveryITTest";
-  private static ElasticsearchContainer elastic;
-  private static final String ELASTIC_HOST = "http://elastic:9200";
+  private static final String ELASTIC_HOSTNAME = "elastic";
+  private static final String ELASTIC_HOST = "http://" + ELASTIC_HOSTNAME + ":9200";
+
+  private Network network;
+  private ZeebeContainer zeebeBroker;
+  private ElasticsearchContainer elastic;
   private ZeebeClient client;
 
   @Before
   public void setUp() {
-    zeebeBroker = new ZeebeContainer("camunda/zeebe:current-test");
-    configureZeebe(zeebeBroker);
-    final var network = zeebeBroker.getNetwork();
-    elastic = createElastic(network);
-  }
-
-  private static ZeebeContainer configureZeebe(final ZeebeContainer zeebeBroker) {
-
-    zeebeBroker
-        .withEnv(
-            "ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_CLASSNAME",
-            "io.zeebe.exporter.ElasticsearchExporter")
-        .withEnv("ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_ARGS_URL", ELASTIC_HOST)
-        .withEnv("ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_ARGS_BULK_DELAY", "1")
-        .withEnv("ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_ARGS_BULK_SIZE", "1")
-        .withEnv("ZEEBE_BROKER_DATA_SNAPSHOTPERIOD", "1m")
-        .withEnv("ZEEBE_BROKER_DATA_LOGSEGMENTSIZE", "1MB")
-        .withEnv("ZEEBE_BROKER_NETWORK_MAXMESSAGESIZE", "1MB")
-        .withEnv("ZEEBE_BROKER_DATA_DISKUSAGECOMMANDWATERMARK", "0.5")
-        .withEnv("ZEEBE_BROKER_DATA_LOGINDEXDENSITY", "1")
-        .withEnv("ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_ARGS_INDEX_MESSAGE", "true");
-
-    zeebeBroker
-        .getDockerClient()
-        .createVolumeCmd()
-        .withDriver("local")
-        .withDriverOpts(Map.of("type", "tmpfs", "device", "tmpfs", "o", "size=16m"))
-        .withName(VOLUME_NAME)
-        .exec();
-    final Volume newVolume = new Volume("/usr/local/zeebe/data");
-    zeebeBroker.withCreateContainerCmdModifier(
-        cmd ->
-            cmd.withHostConfig(cmd.getHostConfig().withBinds(new Bind(VOLUME_NAME, newVolume)))
-                .withName("zeebe-test"));
-
-    return zeebeBroker;
-  }
-
-  private static ElasticsearchContainer createElastic(final Network network) {
-    final ElasticsearchContainer container =
-        new ElasticsearchContainer(
-            "docker.elastic.co/elasticsearch/elasticsearch:"
-                + RestClient.class.getPackage().getImplementationVersion());
-
-    container.withNetwork(network).withEnv("discovery.type", "single-node");
-    container.withCreateContainerCmdModifier(cmd -> cmd.withName("elastic"));
-    return container;
+    network = Network.newNetwork();
+    zeebeBroker = createZeebe().withNetwork(network);
+    elastic = createElastic().withNetwork(network);
   }
 
   @After
   public void tearDown() {
-    zeebeBroker.stop();
-    zeebeBroker.getDockerClient().removeVolumeCmd(VOLUME_NAME).exec();
-    elastic.stop();
+    if (zeebeBroker != null) {
+      CloseHelper.quietClose(zeebeBroker);
+    }
+
+    if (elastic != null) {
+      CloseHelper.quietClose(elastic);
+    }
+
+    if (network != null) {
+      CloseHelper.quietClose(network);
+    }
   }
 
   @Test
@@ -110,6 +76,7 @@ public class DiskSpaceRecoveryITTest {
                     .hasRootCauseMessage(
                         "RESOURCE_EXHAUSTED: Cannot accept requests for partition 1. Broker is out of disk space"));
 
+    LOG.info("Start Elastic and wait until broker compacts to make more space");
     elastic.start();
 
     // then
@@ -120,10 +87,8 @@ public class DiskSpaceRecoveryITTest {
   }
 
   private ZeebeClient createClient() {
-    final var apiPort = zeebeBroker.getMappedPort(26500);
-    final var containerIPAddress = zeebeBroker.getContainerIpAddress();
     return ZeebeClient.newClientBuilder()
-        .gatewayAddress(containerIPAddress + ":" + apiPort)
+        .gatewayAddress(zeebeBroker.getExternalGatewayAddress())
         .usePlaintext()
         .build();
   }
@@ -150,5 +115,37 @@ public class DiskSpaceRecoveryITTest {
         .correlationKey(String.valueOf(1))
         .send()
         .join();
+  }
+
+  private ZeebeContainer createZeebe() {
+    final Map<String, String> volumeOptions =
+        Map.of("type", "tmpfs", "device", "tmpfs", "o", "size=16m");
+    final var volume =
+        ManagedVolume.newVolume(cmd -> cmd.withDriver("local").withDriverOpts(volumeOptions));
+
+    return new ZeebeContainer("camunda/zeebe:current-test")
+        .withEnv(
+            "ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_CLASSNAME",
+            "io.zeebe.exporter.ElasticsearchExporter")
+        .withEnv("ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_ARGS_URL", ELASTIC_HOST)
+        .withEnv("ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_ARGS_BULK_DELAY", "1")
+        .withEnv("ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_ARGS_BULK_SIZE", "1")
+        .withEnv("ZEEBE_BROKER_DATA_SNAPSHOTPERIOD", "1m")
+        .withEnv("ZEEBE_BROKER_DATA_LOGSEGMENTSIZE", "1MB")
+        .withEnv("ZEEBE_BROKER_NETWORK_MAXMESSAGESIZE", "1MB")
+        .withEnv("ZEEBE_BROKER_DATA_DISKUSAGECOMMANDWATERMARK", "0.5")
+        .withEnv("ZEEBE_BROKER_DATA_LOGINDEXDENSITY", "1")
+        .withEnv("ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_ARGS_INDEX_MESSAGE", "true")
+        .withCreateContainerCmdModifier(volume::attachVolumeToContainer);
+  }
+
+  private ElasticsearchContainer createElastic() {
+    final String image =
+        "docker.elastic.co/elasticsearch/elasticsearch:"
+            + RestClient.class.getPackage().getImplementationVersion();
+
+    return new ElasticsearchContainer(image)
+        .withEnv("discovery.type", "single-node")
+        .withNetworkAliases(ELASTIC_HOSTNAME);
   }
 }
