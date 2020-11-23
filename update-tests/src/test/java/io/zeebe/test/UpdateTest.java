@@ -16,103 +16,15 @@ import io.zeebe.util.Either;
 import io.zeebe.util.VersionUtil;
 import java.time.Duration;
 import java.util.Map;
-import java.util.Optional;
-import java.util.concurrent.TimeUnit;
 import org.awaitility.Awaitility;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Timeout;
-import org.junit.jupiter.api.extension.RegisterExtension;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ArgumentsSource;
-import org.testcontainers.containers.Network;
+import org.junit.jupiter.api.extension.ExtendWith;
 
-@Execution(ExecutionMode.SAME_THREAD)
-class UpdateTest {
-  private static final String LAST_VERSION = VersionUtil.getPreviousVersion();
-  private static final String CURRENT_VERSION = "current-test";
-  private static Network network;
+@ExtendWith(ContainerStateExtension.class)
+interface UpdateTest {
+  String LAST_VERSION = VersionUtil.getPreviousVersion();
+  String CURRENT_VERSION = "current-test";
 
-  private ContainerState state = new ContainerState(network);
-  @RegisterExtension ContainerStateExtension stateExtension = new ContainerStateExtension(state);
-
-  @BeforeAll
-  static void setUp() {
-    network = Network.newNetwork();
-  }
-
-  @AfterAll
-  static void tearDown() {
-    Optional.ofNullable(network).ifPresent(Network::close);
-  }
-
-  @Timeout(value = 5, unit = TimeUnit.MINUTES)
-  @ParameterizedTest(name = "{0}")
-  @ArgumentsSource(UpdateTestCaseProvider.class)
-  void oldGatewayWithNewBroker(final String name, final UpdateTestCase testCase) {
-    // given
-    state.broker(CURRENT_VERSION).withStandaloneGateway(LAST_VERSION).start(true);
-    final long wfInstanceKey = testCase.setUp(state.client());
-
-    // when
-    final long key = testCase.runBefore(state);
-
-    // then
-    testCase.runAfter(state, wfInstanceKey, key);
-    awaitProcessCompletion();
-  }
-
-  @Timeout(value = 5, unit = TimeUnit.MINUTES)
-  @ParameterizedTest(name = "{0}")
-  @ArgumentsSource(UpdateTestCaseProvider.class)
-  void updateWithSnapshot(final String name, final UpdateTestCase testCase) {
-    updateZeebe(testCase, true);
-  }
-
-  @Timeout(value = 5, unit = TimeUnit.MINUTES)
-  @ParameterizedTest(name = "{0}")
-  @ArgumentsSource(UpdateTestCaseProvider.class)
-  void updateWithoutSnapshot(final String name, final UpdateTestCase testCase) {
-    updateZeebe(testCase, false);
-  }
-
-  private void updateZeebe(final UpdateTestCase testCase, final boolean withSnapshot) {
-    // given
-    state.broker(LAST_VERSION).start(true);
-    final long wfInstanceKey = testCase.setUp(state.client());
-    final long key = testCase.runBefore(state);
-
-    // when
-    if (withSnapshot) {
-      // it's necessary to restart without the debug exporter to allow snapshotting
-      state.close();
-      state.broker(LAST_VERSION).start(false);
-      EitherAssert.assertThat(state.getPartitionsActuatorClient().takeSnapshot())
-          .as("expect successful response as right member")
-          .isRight();
-      Awaitility.await("until a snapshot is available")
-          .atMost(Duration.ofSeconds(30))
-          .pollInterval(Duration.ofMillis(500))
-          .untilAsserted(this::assertSnapshotAvailable);
-    }
-
-    // perform the update
-    state.close();
-    state.broker(CURRENT_VERSION).start(true);
-    if (withSnapshot) {
-      assertSnapshotAvailable();
-    } else {
-      assertNoSnapshotAvailable();
-    }
-
-    // then
-    testCase.runAfter(state, wfInstanceKey, key);
-    awaitProcessCompletion();
-  }
-
-  private void awaitProcessCompletion() {
+  default void awaitProcessCompletion(final ContainerState state) {
     Awaitility.await("until process is completed")
         .atMost(Duration.ofSeconds(5))
         .pollInterval(Duration.ofMillis(200))
@@ -120,7 +32,7 @@ class UpdateTest {
             () -> assertThat(state.hasElementInState(PROCESS_ID, "ELEMENT_COMPLETED")).isTrue());
   }
 
-  private void assertSnapshotAvailable() {
+  default void assertSnapshotAvailable(final ContainerState state) {
     final Either<Throwable, Map<String, PartitionStatus>> response =
         state.getPartitionsActuatorClient().queryPartitions();
     EitherAssert.assertThat(response).isRight();
@@ -130,7 +42,7 @@ class UpdateTest {
     assertThat(partitionStatus.snapshotId).isNotBlank();
   }
 
-  private void assertNoSnapshotAvailable() {
+  default void assertNoSnapshotAvailable(final ContainerState state) {
     final Either<Throwable, Map<String, PartitionStatus>> response =
         state.getPartitionsActuatorClient().queryPartitions();
     EitherAssert.assertThat(response).isRight();

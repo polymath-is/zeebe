@@ -18,13 +18,14 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import net.jodah.failsafe.Failsafe;
 import net.jodah.failsafe.RetryPolicy;
+import org.junit.jupiter.api.extension.ExtensionContext.Store.CloseableResource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.ContainerFetchException;
 import org.testcontainers.containers.ContainerLaunchException;
 import org.testcontainers.containers.Network;
 
-public class ContainerState {
+public class ContainerState implements CloseableResource {
   private static final RetryPolicy<Void> CONTAINER_START_RETRY_POLICY =
       new RetryPolicy().withMaxRetries(5).withBackoff(3, 30, ChronoUnit.SECONDS);
 
@@ -45,19 +46,18 @@ public class ContainerState {
             });
   }
 
-  private final Network network;
-
   private ZeebeContainer broker;
   private ZeebeGatewayContainer gateway;
   private ZeebeClient client;
   private PartitionsActuatorClient partitionsActuatorClient;
   private ManagedVolume volume;
+  private Network network;
 
   private String brokerVersion;
   private String gatewayVersion;
 
-  public ContainerState(final Network network) {
-    this.network = network;
+  public ContainerState() {
+    network = Network.SHARED;
   }
 
   public ZeebeClient client() {
@@ -82,6 +82,11 @@ public class ContainerState {
     return this;
   }
 
+  public ContainerState withNetwork(final Network network) {
+    this.network = network;
+    return this;
+  }
+
   public ContainerState withStandaloneGateway(final String gatewayVersion) {
     this.gatewayVersion = gatewayVersion;
     return this;
@@ -92,6 +97,9 @@ public class ContainerState {
     broker =
         new ZeebeContainer("camunda/zeebe:" + brokerVersion)
             .withEnv("ZEEBE_LOG_LEVEL", "DEBUG")
+            .withEnv("ZEEBE_BROKER_NETWORK_MAXMESSAGESIZE", "128KB")
+            .withEnv("ZEEBE_BROKER_DATA_USEMMAP", "true")
+            .withEnv("ZEEBE_BROKER_DATA_LOGSEGMENTSIZE", "64MB")
             .withEnv("ZEEBE_BROKER_DATA_SNAPSHOTPERIOD", "1m")
             .withEnv("ZEEBE_BROKER_DATA_LOGINDEXDENSITY", "1")
             .withCreateContainerCmdModifier(volume::attachVolumeToContainer)
@@ -192,6 +200,7 @@ public class ContainerState {
   }
 
   /** Close all opened resources. */
+  @Override
   public void close() {
     if (client != null) {
       client.close();
